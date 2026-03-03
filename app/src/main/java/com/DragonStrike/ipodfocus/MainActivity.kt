@@ -50,7 +50,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Icon
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.width
-
+import android.content.ContentUris
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.media.MediaMetadataRetriever
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,14 +90,31 @@ fun IpodScreen() {
     val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val mediaPlayer = remember { MediaPlayer.create(context, R.raw.focus) }
 
+
     // États du Pomodoro
     val isPlaying = remember { mutableStateOf(false) }
     val timeRemaining = remember { mutableStateOf(45 * 60) }
 
-    // NOUVEAU : États du Menu
+    // États du Menu
     val currentScreen = remember { mutableStateOf("MENU") } // Peut être "MENU", "POMODORO", "MUSIC", "SETTINGS"
     val menuItems = listOf("Pomodoro Work", "Listen to Music", "Settings")
     val selectedMenuIndex = remember { mutableStateOf(0) }
+    // NOUVEAU : Mémoire pour les chansons
+    val songs = remember { mutableStateOf<List<Song>>(emptyList()) }
+    val selectedSongIndex = remember { mutableStateOf(0) }
+    val currentSong = remember { mutableStateOf<Song?>(null) }
+    val currentCover = remember { mutableStateOf<ImageBitmap?>(null) }
+
+    // NOUVEAU : Le "Videur" qui demande la permission
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            // Si on dit OUI, on lance la recherche et on change d'écran !
+            songs.value = getLocalMusic(context)
+            currentScreen.value = "SONG_LIST"
+        }
+    }
 
     // --- 2. LE MOTEUR DU TEMPS ---
     LaunchedEffect(isPlaying.value) {
@@ -177,7 +206,41 @@ fun IpodScreen() {
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(text = "Brown Noise - focus.mp3", color = Color.LightGray, fontSize = 16.sp)
                         }
-                    } else if (currentScreen.value == "MUSIC") {
+                    } else if (currentScreen.value == "SONG_LIST") {
+                        // Si on valide une musique, on la charge et on passe à l'écran de lecture !
+                        if (songs.value.isNotEmpty()) {
+                            val songToPlay = songs.value[selectedSongIndex.value]
+                            currentSong.value = songToPlay
+
+                            // 1. Extraction de la pochette d'album
+                            val retriever = MediaMetadataRetriever()
+                            try {
+                                retriever.setDataSource(context, songToPlay.uri)
+                                val artBytes = retriever.embeddedPicture
+                                if (artBytes != null) {
+                                    // On transforme les données brutes en image affichable
+                                    val bitmap = BitmapFactory.decodeByteArray(artBytes, 0, artBytes.size)
+                                    currentCover.value = bitmap.asImageBitmap()
+                                } else {
+                                    currentCover.value = null // Pas de pochette trouvée
+                                }
+                            } catch (e: Exception) {
+                                currentCover.value = null
+                            } finally {
+                                retriever.release()
+                            }
+
+                            // 2. Lancement de la musique
+                            mediaPlayer.reset() // On vide le lecteur (enlève le bruit marron)
+                            mediaPlayer.setDataSource(context, songToPlay.uri) // On met la nouvelle musique
+                            mediaPlayer.prepare()
+                            mediaPlayer.start()
+                            isPlaying.value = true // On passe en mode Play
+
+                            // 3. On change d'écran
+                            currentScreen.value = "MUSIC"
+                        }
+                    }else if (currentScreen.value == "MUSIC") {
                         // --- DESSIN DE L'ÉCRAN LECTEUR MUSIQUE ---
                         Column(
                             modifier = Modifier.fillMaxSize(),
@@ -193,30 +256,50 @@ fun IpodScreen() {
                             )
 
                             // Milieu : Pochette et Infos
+                            // Milieu : Pochette et Infos
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // 1. La fausse pochette d'album (Carré gris pour le moment)
+                                // 1. La vraie pochette d'album
                                 Box(
                                     modifier = Modifier
                                         .size(80.dp)
                                         .background(Color.DarkGray)
                                         .border(1.dp, Color.Gray)
                                 ) {
-                                    // On y mettra la vraie cover plus tard
-                                    Text("🎵", modifier = Modifier.align(Alignment.Center), fontSize = 32.sp)
+                                    if (currentCover.value != null) {
+                                        // Affiche l'image extraite du MP3
+                                        Image(
+                                            bitmap = currentCover.value!!,
+                                            contentDescription = "Pochette d'album",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop // Recadre proprement en carré
+                                        )
+                                    } else {
+                                        // Image par défaut s'il n'y a pas de pochette
+                                        Text("🎵", modifier = Modifier.align(Alignment.Center), fontSize = 32.sp)
+                                    }
                                 }
 
                                 Spacer(modifier = Modifier.width(16.dp))
 
-                                // 2. Les informations du morceau
+                                // 2. Les informations dynamiques du morceau
                                 Column {
-                                    Text(text = "Titre du morceau", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = currentSong.value?.title ?: "Sélectionnez un titre",
+                                        color = Color.White,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1 // Évite que le texte ne dépasse de l'écran
+                                    )
                                     Spacer(modifier = Modifier.height(4.dp))
-                                    Text(text = "Nom de l'Artiste", color = Color.LightGray, fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(text = "Album", color = Color.Gray, fontSize = 12.sp)
+                                    Text(
+                                        text = currentSong.value?.artist ?: "Artiste inconnu",
+                                        color = Color.LightGray,
+                                        fontSize = 14.sp,
+                                        maxLines = 1
+                                    )
                                 }
                             }
 
@@ -284,8 +367,11 @@ fun IpodScreen() {
 
                                 if (smoothDelta > sensitivity) {
                                     // SENS DES AIGUILLES
+                                    // SENS DES AIGUILLES
                                     if (currentScreen.value == "MENU") {
                                         if (selectedMenuIndex.value < menuItems.size - 1) selectedMenuIndex.value++
+                                    } else if (currentScreen.value == "SONG_LIST") { // NOUVEAU
+                                        if (selectedSongIndex.value < songs.value.size - 1) selectedSongIndex.value++
                                     } else if (currentScreen.value == "POMODORO" && !isPlaying.value) {
                                         timeRemaining.value += 30
                                     }
@@ -296,6 +382,8 @@ fun IpodScreen() {
                                     // SENS INVERSE
                                     if (currentScreen.value == "MENU") {
                                         if (selectedMenuIndex.value > 0) selectedMenuIndex.value--
+                                    } else if (currentScreen.value == "SONG_LIST") { // NOUVEAU
+                                        if (selectedSongIndex.value > 0) selectedSongIndex.value--
                                     } else if (currentScreen.value == "POMODORO" && !isPlaying.value && timeRemaining.value > 60) {
                                         timeRemaining.value -= 30
                                     }
@@ -335,12 +423,21 @@ fun IpodScreen() {
                     .background(Color.DarkGray)
                     .clickable {
                         if (currentScreen.value == "MENU") {
-                            // Action du bouton central dans le menu : "OK"
                             if (selectedMenuIndex.value == 0) {
                                 currentScreen.value = "POMODORO"
+                            } else if (selectedMenuIndex.value == 1) {
+                                // NOUVEAU : On demande la permission selon la version d'Android
+                                val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    Manifest.permission.READ_MEDIA_AUDIO // Android 13+
+                                } else {
+                                    Manifest.permission.READ_EXTERNAL_STORAGE // Android plus ancien
+                                }
+                                permissionLauncher.launch(permission)
                             }
-                            else if (selectedMenuIndex.value == 1) {
-                                currentScreen.value = "MUSIC" //
+                        } else if (currentScreen.value == "SONG_LIST") {
+                            // Si on valide une musique, on passe à l'écran de lecture !
+                            if (songs.value.isNotEmpty()) {
+                                currentScreen.value = "MUSIC"
                             }
                         } else if (currentScreen.value == "POMODORO") {
                             // Action du bouton central dans le Pomodoro : "Play/Pause"
@@ -362,4 +459,55 @@ fun IpodScreen() {
             )
         }
     }
+}
+data class Song(
+    val id: Long,
+    val title: String,
+    val artist: String,
+    val uri: Uri // L'adresse exacte du fichier dans le téléphone
+)
+fun getLocalMusic(context: Context): List<Song> {
+    val songs = mutableListOf<Song>()
+
+    // 1. On dit à Android où chercher (La mémoire externe)
+    val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+    } else {
+        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+    }
+
+    // 2. On choisit les colonnes qu'on veut lire dans la base de données
+    val projection = arrayOf(
+        MediaStore.Audio.Media._ID,
+        MediaStore.Audio.Media.TITLE,
+        MediaStore.Audio.Media.ARTIST
+    )
+
+    // 3. On filtre pour ne prendre QUE les musiques (pas les mémos vocaux par ex)
+    val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
+
+    // 4. On lance la recherche !
+    context.contentResolver.query(
+        collection,
+        projection,
+        selection,
+        null,
+        "${MediaStore.Audio.Media.TITLE} ASC" // Tri par ordre alphabétique
+    )?.use { cursor ->
+        // 5. On lit les résultats ligne par ligne
+        val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+        val titleColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+        val artistColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+
+        while (cursor.moveToNext()) {
+            val id = cursor.getLong(idColumn)
+            val title = cursor.getString(titleColumn) ?: "Titre inconnu"
+            val artist = cursor.getString(artistColumn) ?: "Artiste inconnu"
+            val contentUri: Uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+
+            // On ajoute la chanson trouvée à notre liste
+            songs.add(Song(id, title, artist, contentUri))
+        }
+    }
+    return songs
 }
